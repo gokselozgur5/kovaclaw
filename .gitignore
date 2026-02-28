@@ -1,1 +1,3 @@
 /target
+bridge/node_modules
+bridge/auth_state
