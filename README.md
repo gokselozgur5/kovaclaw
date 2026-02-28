@@ -41,17 +41,17 @@ All communication flows through the `Event` enum (tokio broadcast + mpsc):
 - [x] Agent (system prompt + history + LLM)
 - [x] CLI REPL (stdin -> llama-server -> stdout)
 
-### Phase 2: Tools + Session
-- [ ] Tool trait + registry
-- [ ] `read_file`, `write_file`, `shell_exec` tools
-- [ ] Tool approval flow (y/n prompt)
-- [ ] JSONL session persistence
-- [ ] Streaming response (SSE)
+### Phase 2: Tools + Session ✅
+- [x] Tool trait + registry
+- [x] `read_file`, `write_file`, `shell_exec` tools
+- [x] Tool approval flow (y/n prompt, auto-approve for read_file)
+- [x] JSONL session persistence
+- [x] Streaming response (SSE)
 
-### Phase 3: WhatsApp Bridge
-- [ ] `bridge/baileys_bridge.js` - Baileys wrapper, stdin/stdout JSON lines
-- [ ] `kova-whatsapp` - Node subprocess spawn, pipe events
-- [ ] Reuse OpenClaw auth state
+### Phase 3: WhatsApp Bridge ✅
+- [x] `bridge/baileys_bridge.js` - Baileys wrapper, stdin/stdout JSON lines
+- [x] `kova-whatsapp` - Node subprocess spawn, pipe events
+- [x] Auth state configurable via BAILEYS_AUTH_DIR env
 
 ### Phase 4: TUI + Polish
 - [ ] ratatui terminal UI
@@ -81,9 +81,13 @@ Qwen2.5 supports tool calling via Hermes format. llama-server with `--jinja` fla
 ## Running
 
 ```bash
-# start llama-server (port 8080, Qwen2.5)
+# CLI mode
 cd kovaclaw
 cargo run -p kova-cli
+
+# WhatsApp mode
+cd bridge && npm install && cd ..
+BAILEYS_AUTH_DIR=/path/to/auth cargo run -p kova-whatsapp
 ```
 
 ## Verification
