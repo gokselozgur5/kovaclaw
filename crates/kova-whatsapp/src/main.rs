@@ -2,15 +2,10 @@ mod bridge;
 
 use anyhow::Result;
 use bridge::{BaileysBridge, BridgeEvent};
-use kova_core::agent::Agent;
+use kova_core::claude::ClaudeClient;
 use kova_core::config::Config;
-use kova_core::llm::LlmClient;
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
-
-// Tools that auto-approve without user confirmation on WhatsApp
-const WA_AUTO_APPROVE: &[&str] = &["read_file", "shell_exec"];
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -20,10 +15,9 @@ async fn main() -> Result<()> {
     let config = Config::load(&base_dir.join("config/kovaclaw.json"))?;
     let identity = config.load_identity(&base_dir)?;
 
-    let llm = LlmClient::new(config.llm);
-    let mut agent = Agent::new(llm, identity);
-
-    let whitelist: HashSet<String> = WA_AUTO_APPROVE.iter().map(|s| s.to_string()).collect();
+    let mut claude = ClaudeClient::new()
+        .with_system_prompt(identity)
+        .with_model("sonnet".to_string());
 
     let bridge_dir = base_dir.join("bridge");
     let auth_dir = std::env::var("BAILEYS_AUTH_DIR")
@@ -32,8 +26,7 @@ async fn main() -> Result<()> {
 
     let mut last_self_send: Option<Instant> = None;
 
-    println!("[kovaclaw-wa] starting bridge...");
-    println!("[kovaclaw-wa] auto-approve tools: {:?}", WA_AUTO_APPROVE);
+    println!("[kovaclaw-wa] starting bridge (claude cli backend)...");
     let (mut bridge, mut events) = BaileysBridge::spawn(&bridge_dir, &auth_dir).await?;
 
     while let Some(event) = events.recv().await {
@@ -49,7 +42,6 @@ async fn main() -> Result<()> {
                 let label = if push_name.is_empty() { &jid } else { &push_name };
 
                 if from_me {
-                    // Skip kova's own messages (echoed back within 30s of sending)
                     if let Some(t) = last_self_send {
                         if t.elapsed().as_secs() < 30 {
                             println!("[kova echo, skipped]");
@@ -61,32 +53,21 @@ async fn main() -> Result<()> {
                     println!("[{label}] {text}");
                 }
 
-                let wl = whitelist.clone();
-                match agent.run_loop(&text, |name| wl.contains(name)).await {
-                    Ok(result) => {
-                        for exec in &result.tool_log {
-                            let status = if exec.success { "ok" } else { "fail" };
-                            let preview = if exec.output.len() > 100 {
-                                format!("{}...", &exec.output[..100])
+                match claude.send(&jid, &text).await {
+                    Ok(response) => {
+                        if !response.trim().is_empty() {
+                            let response = if response.len() > 4000 {
+                                format!("{}...\n[truncated]", &response[..4000])
                             } else {
-                                exec.output.clone()
+                                response
                             };
-                            println!("  [tool:{} -> {status}] {preview}", exec.name);
-                        }
-
-                        if !result.final_text.trim().is_empty() {
-                            let text = if result.final_text.len() > 4000 {
-                                format!("{}...\n[truncated]", &result.final_text[..4000])
-                            } else {
-                                result.final_text
-                            };
-                            println!("[kova -> {label}] {text}");
+                            println!("[kova -> {label}] {response}");
                             last_self_send = Some(Instant::now());
-                            bridge.send_message(&jid, &text).await?;
+                            bridge.send_message(&jid, &response).await?;
                         }
                     }
                     Err(e) => {
-                        tracing::error!("agent error: {e}");
+                        tracing::error!("claude error: {e}");
                         last_self_send = Some(Instant::now());
                         bridge.send_message(&jid, &format!("Error: {e}")).await?;
                     }

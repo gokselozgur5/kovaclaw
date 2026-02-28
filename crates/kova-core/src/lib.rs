@@ -4,3 +4,4 @@ pub mod llm;
 pub mod agent;
 pub mod tools;
 pub mod session;
+pub mod claude;
