@@ -1,4 +1,0 @@
-{"timestamp":"2026-02-28T14:42:19.606142Z","message":{"role":"user","content":"list files in current directory"}}
-{"timestamp":"2026-02-28T14:42:20.221084Z","message":{"role":"assistant","content":"assistant\n"}}
-{"timestamp":"2026-02-28T14:42:20.221427Z","message":{"role":"user","content":"y"}}
-{"timestamp":"2026-02-28T14:42:21.421303Z","message":{"role":"assistant","content":"assistant\nshell_exec ile çalışıyorum, saniye gibi. Dizin listeleniyor..."}}

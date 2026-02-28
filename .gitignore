@@ -1,3 +1,4 @@
 /target
+/sessions
 bridge/node_modules
 bridge/auth_state
