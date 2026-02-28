@@ -1,0 +1,3 @@
+{"timestamp":"2026-02-28T14:37:09.255524Z","message":{"role":"user","content":"list files in the current directory"}}
+{"timestamp":"2026-02-28T14:37:10.354610Z","message":{"role":"assistant","content":"assistant\n<tool_call>\n{\"name\": \"shell_exec\", \"arguments\": {\"command\": \"ls\"}}\n</tool_call>"}}
+{"timestamp":"2026-02-28T14:37:10.355004Z","message":{"role":"user","content":"<tool_result>\n{\"name\": \"shell_exec\", \"output\": \"Tool call denied by user.\"}\n</tool_result>"}}
