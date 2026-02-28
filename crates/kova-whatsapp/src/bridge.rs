@@ -21,7 +21,11 @@ pub enum BridgeEvent {
         push_name: String,
         #[serde(default)]
         message_id: String,
+        #[serde(default)]
+        from_me: bool,
     },
+    #[serde(rename = "qr")]
+    Qr { data: String },
     #[serde(rename = "sent")]
     Sent { jid: String },
     #[serde(rename = "error")]

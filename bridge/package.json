@@ -1,8 +1,11 @@
 {
   "name": "kovaclaw-bridge",
   "private": true,
+  "type": "module",
   "dependencies": {
-    "@whiskeysockets/baileys": "^6",
-    "@hapi/boom": "^10"
+    "@hapi/boom": "^10",
+    "@whiskeysockets/baileys": "7.0.0-rc.9",
+    "pino": "^9",
+    "qrcode-terminal": "^0.12.0"
   }
 }

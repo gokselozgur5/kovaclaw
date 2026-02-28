@@ -1,42 +1,67 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
-const { Boom } = require('@hapi/boom');
-const readline = require('readline');
+import { makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, DisconnectReason } from '@whiskeysockets/baileys';
+import { Boom } from '@hapi/boom';
+import { createInterface } from 'readline';
+import pino from 'pino';
+import qrcode from 'qrcode-terminal';
 
 const AUTH_DIR = process.env.BAILEYS_AUTH_DIR || './auth_state';
-
-const rl = readline.createInterface({ input: process.stdin });
+const rl = createInterface({ input: process.stdin });
 
 function send(event) {
     process.stdout.write(JSON.stringify(event) + '\n');
 }
 
 async function start() {
+    const logger = pino({ level: 'silent' });
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+    const { version } = await fetchLatestBaileysVersion();
 
     const sock = makeWASocket({
-        auth: state,
-        printQRInTerminal: true,
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, logger),
+        },
+        version,
+        logger,
+        printQRInTerminal: false,
+        browser: ['KovaClaw', 'cli', '0.1.0'],
+        syncFullHistory: false,
+        markOnlineOnConnect: false,
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on('connection.update', ({ connection, lastDisconnect }) => {
+    sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
+        if (qr) {
+            process.stderr.write('Scan this QR in WhatsApp (Linked Devices):\n');
+            qrcode.generate(qr, { small: true }, (code) => process.stderr.write(code + '\n'));
+            send({ type: 'qr', data: qr });
+        }
         if (connection === 'close') {
             const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
             if (reason === DisconnectReason.loggedOut) {
                 send({ type: 'disconnected', reason: 'logged_out' });
                 process.exit(1);
             }
-            // reconnect
+            process.stderr.write(`Connection closed (reason: ${reason}), reconnecting in 3s...\n`);
             setTimeout(start, 3000);
-        } else if (connection === 'open') {
+            return; // Don't process further
+        }
+        if (connection === 'open') {
             send({ type: 'connected' });
         }
     });
 
-    sock.ev.on('messages.upsert', ({ messages }) => {
+    if (sock.ws && typeof sock.ws.on === 'function') {
+        sock.ws.on('error', (err) => {
+            process.stderr.write(`WS error: ${err.message}\n`);
+        });
+    }
+
+    sock.ev.on('messages.upsert', ({ messages, type }) => {
+        // Only process real-time notifications, not history sync
+        if (type !== 'notify') return;
         for (const msg of messages) {
-            if (msg.key.fromMe) continue;
             const text = msg.message?.conversation
                 || msg.message?.extendedTextMessage?.text
                 || '';
@@ -48,11 +73,11 @@ async function start() {
                 text,
                 pushName: msg.pushName || '',
                 messageId: msg.key.id,
+                fromMe: msg.key.fromMe || false,
             });
         }
     });
 
-    // Read outgoing messages from stdin (JSON lines)
     rl.on('line', async (line) => {
         try {
             const cmd = JSON.parse(line);

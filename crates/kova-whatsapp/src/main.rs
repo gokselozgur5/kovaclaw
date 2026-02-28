@@ -7,6 +7,7 @@ use kova_core::config::Config;
 use kova_core::llm::LlmClient;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::time::Instant;
 
 // Tools that auto-approve without user confirmation on WhatsApp
 const WA_AUTO_APPROVE: &[&str] = &["read_file", "shell_exec"];
@@ -29,6 +30,8 @@ async fn main() -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| bridge_dir.join("auth_state"));
 
+    let mut last_self_send: Option<Instant> = None;
+
     println!("[kovaclaw-wa] starting bridge...");
     println!("[kovaclaw-wa] auto-approve tools: {:?}", WA_AUTO_APPROVE);
     let (mut bridge, mut events) = BaileysBridge::spawn(&bridge_dir, &auth_dir).await?;
@@ -42,14 +45,25 @@ async fn main() -> Result<()> {
                 println!("[kovaclaw-wa] disconnected: {reason}");
                 break;
             }
-            BridgeEvent::Message { jid, text, push_name, .. } => {
+            BridgeEvent::Message { jid, text, push_name, from_me, .. } => {
                 let label = if push_name.is_empty() { &jid } else { &push_name };
-                println!("[{label}] {text}");
+
+                if from_me {
+                    // Skip kova's own messages (echoed back within 30s of sending)
+                    if let Some(t) = last_self_send {
+                        if t.elapsed().as_secs() < 30 {
+                            println!("[kova echo, skipped]");
+                            continue;
+                        }
+                    }
+                    println!("[self] {text}");
+                } else {
+                    println!("[{label}] {text}");
+                }
 
                 let wl = whitelist.clone();
                 match agent.run_loop(&text, |name| wl.contains(name)).await {
                     Ok(result) => {
-                        // Log tool executions
                         for exec in &result.tool_log {
                             let status = if exec.success { "ok" } else { "fail" };
                             let preview = if exec.output.len() > 100 {
@@ -61,24 +75,28 @@ async fn main() -> Result<()> {
                         }
 
                         if !result.final_text.trim().is_empty() {
-                            // WhatsApp has a ~65k char limit, truncate if needed
                             let text = if result.final_text.len() > 4000 {
                                 format!("{}...\n[truncated]", &result.final_text[..4000])
                             } else {
                                 result.final_text
                             };
                             println!("[kova -> {label}] {text}");
+                            last_self_send = Some(Instant::now());
                             bridge.send_message(&jid, &text).await?;
                         }
                     }
                     Err(e) => {
                         tracing::error!("agent error: {e}");
+                        last_self_send = Some(Instant::now());
                         bridge.send_message(&jid, &format!("Error: {e}")).await?;
                     }
                 }
             }
             BridgeEvent::Sent { jid } => {
                 tracing::debug!("sent to {jid}");
+            }
+            BridgeEvent::Qr { .. } => {
+                println!("[kovaclaw-wa] QR code generated (check terminal)");
             }
             BridgeEvent::Error { message } => {
                 tracing::error!("bridge error: {message}");

@@ -117,7 +117,7 @@ impl Agent {
             let calls = Self::parse_tool_calls(&response);
             if calls.is_empty() {
                 return Ok(LoopResult {
-                    final_text: strip_tool_calls(&response),
+                    final_text: clean_response(&response),
                     tool_log,
                 });
             }
@@ -215,6 +215,14 @@ impl Agent {
                 serde_json::to_string(output).unwrap_or_else(|_| format!("\"{output}\""))),
         });
     }
+}
+
+pub fn clean_response(text: &str) -> String {
+    let text = strip_tool_calls(text);
+    // Strip leading "assistant" prefix that some models prepend
+    let text = text.trim();
+    let text = text.strip_prefix("assistant").unwrap_or(text).trim();
+    text.to_string()
 }
 
 fn strip_tool_calls(text: &str) -> String {
