@@ -2,3 +2,4 @@
 /sessions
 bridge/node_modules
 bridge/auth_state
+bridge/auth_state_new
