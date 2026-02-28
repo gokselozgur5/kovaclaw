@@ -1,0 +1,8 @@
+{
+  "name": "kovaclaw-bridge",
+  "private": true,
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6",
+    "@hapi/boom": "^10"
+  }
+}
