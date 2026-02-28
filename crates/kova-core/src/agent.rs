@@ -5,12 +5,26 @@ use crate::tools::{ToolCall, ToolRegistry};
 use anyhow::Result;
 use tokio::io::AsyncWrite;
 
+const MAX_TOOL_ROUNDS: usize = 10;
+
 pub struct Agent {
     llm: LlmClient,
     system_prompt: String,
     history: Vec<Message>,
     pub tools: ToolRegistry,
     session: Option<Session>,
+}
+
+pub struct LoopResult {
+    pub final_text: String,
+    pub tool_log: Vec<ToolExecution>,
+}
+
+pub struct ToolExecution {
+    pub name: String,
+    pub args: serde_json::Value,
+    pub output: String,
+    pub success: bool,
 }
 
 impl Agent {
@@ -42,7 +56,7 @@ impl Agent {
                 "\n\nYou have access to these tools. To call a tool, respond with EXACTLY this format:\n\
                 <tool_call>\n{{\"name\": \"tool_name\", \"arguments\": {{...}}}}\n</tool_call>\n\n\
                 Available tools:\n{tools_json}\n\n\
-                After receiving tool results, continue your response."
+                After receiving tool results, continue your response. You can chain multiple tool calls across rounds."
             )
         };
 
@@ -81,8 +95,81 @@ impl Agent {
         Ok(response)
     }
 
+    /// Agent loop: send message, execute tool calls automatically, repeat until no more tool calls.
+    /// auto_approve_fn decides per-tool whether to auto-approve.
+    pub async fn run_loop<F>(
+        &mut self,
+        user_input: &str,
+        auto_approve: F,
+    ) -> Result<LoopResult>
+    where
+        F: Fn(&str) -> bool,
+    {
+        self.append(Message { role: Role::User, content: user_input.to_string() });
+
+        let mut tool_log = Vec::new();
+
+        for _ in 0..MAX_TOOL_ROUNDS {
+            let messages = self.build_messages();
+            let response = self.llm.chat(&messages).await?;
+            self.append(Message { role: Role::Assistant, content: response.clone() });
+
+            let calls = Self::parse_tool_calls(&response);
+            if calls.is_empty() {
+                return Ok(LoopResult {
+                    final_text: strip_tool_calls(&response),
+                    tool_log,
+                });
+            }
+
+            for call in &calls {
+                if !auto_approve(&call.name) {
+                    self.feed_tool_result(&call.name, "Tool call denied (not in whitelist).");
+                    tool_log.push(ToolExecution {
+                        name: call.name.clone(),
+                        args: call.arguments.clone(),
+                        output: "denied".into(),
+                        success: false,
+                    });
+                    continue;
+                }
+
+                match self.tools.execute(call) {
+                    Ok(result) => {
+                        self.feed_tool_result(&call.name, &result.output);
+                        tool_log.push(ToolExecution {
+                            name: call.name.clone(),
+                            args: call.arguments.clone(),
+                            output: result.output,
+                            success: result.success,
+                        });
+                    }
+                    Err(e) => {
+                        let err = format!("Error: {e}");
+                        self.feed_tool_result(&call.name, &err);
+                        tool_log.push(ToolExecution {
+                            name: call.name.clone(),
+                            args: call.arguments.clone(),
+                            output: err,
+                            success: false,
+                        });
+                    }
+                }
+            }
+            // Loop continues: LLM gets tool results and responds again
+        }
+
+        // Hit max rounds
+        Ok(LoopResult {
+            final_text: "[max tool rounds reached]".into(),
+            tool_log,
+        })
+    }
+
     pub fn parse_tool_calls(response: &str) -> Vec<ToolCall> {
         let mut calls = Vec::new();
+
+        // Try <tool_call> tags first
         let mut remaining = response;
         while let Some(start) = remaining.find("<tool_call>") {
             if let Some(end) = remaining[start..].find("</tool_call>") {
@@ -95,6 +182,29 @@ impl Agent {
                 break;
             }
         }
+        if !calls.is_empty() {
+            return calls;
+        }
+
+        // Fallback: try to find raw JSON with "name" and "arguments" keys
+        for line in response.lines() {
+            let line = line.trim();
+            if line.starts_with('{') && line.contains("\"name\"") && line.contains("\"arguments\"") {
+                if let Ok(call) = serde_json::from_str::<ToolCall>(line) {
+                    calls.push(call);
+                }
+            }
+        }
+        if !calls.is_empty() {
+            return calls;
+        }
+
+        // Fallback: try entire response as JSON (model sometimes returns just the JSON)
+        let trimmed = response.trim().trim_start_matches("assistant").trim();
+        if let Ok(call) = serde_json::from_str::<ToolCall>(trimmed) {
+            calls.push(call);
+        }
+
         calls
     }
 
@@ -105,4 +215,19 @@ impl Agent {
                 serde_json::to_string(output).unwrap_or_else(|_| format!("\"{output}\""))),
         });
     }
+}
+
+fn strip_tool_calls(text: &str) -> String {
+    let mut result = String::new();
+    let mut remaining = text;
+    while let Some(start) = remaining.find("<tool_call>") {
+        result.push_str(&remaining[..start]);
+        if let Some(end) = remaining[start..].find("</tool_call>") {
+            remaining = &remaining[start + end + 12..];
+        } else {
+            break;
+        }
+    }
+    result.push_str(remaining);
+    result.trim().to_string()
 }

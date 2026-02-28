@@ -5,7 +5,11 @@ use bridge::{BaileysBridge, BridgeEvent};
 use kova_core::agent::Agent;
 use kova_core::config::Config;
 use kova_core::llm::LlmClient;
+use std::collections::HashSet;
 use std::path::PathBuf;
+
+// Tools that auto-approve without user confirmation on WhatsApp
+const WA_AUTO_APPROVE: &[&str] = &["read_file", "shell_exec"];
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -18,12 +22,15 @@ async fn main() -> Result<()> {
     let llm = LlmClient::new(config.llm);
     let mut agent = Agent::new(llm, identity);
 
+    let whitelist: HashSet<String> = WA_AUTO_APPROVE.iter().map(|s| s.to_string()).collect();
+
     let bridge_dir = base_dir.join("bridge");
     let auth_dir = std::env::var("BAILEYS_AUTH_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| bridge_dir.join("auth_state"));
 
     println!("[kovaclaw-wa] starting bridge...");
+    println!("[kovaclaw-wa] auto-approve tools: {:?}", WA_AUTO_APPROVE);
     let (mut bridge, mut events) = BaileysBridge::spawn(&bridge_dir, &auth_dir).await?;
 
     while let Some(event) = events.recv().await {
@@ -39,18 +46,34 @@ async fn main() -> Result<()> {
                 let label = if push_name.is_empty() { &jid } else { &push_name };
                 println!("[{label}] {text}");
 
-                match agent.send(&text).await {
-                    Ok(response) => {
-                        // Strip tool calls from response for WhatsApp
-                        let clean = strip_tool_calls(&response);
-                        if !clean.trim().is_empty() {
-                            println!("[kova -> {label}] {clean}");
-                            bridge.send_message(&jid, &clean).await?;
+                let wl = whitelist.clone();
+                match agent.run_loop(&text, |name| wl.contains(name)).await {
+                    Ok(result) => {
+                        // Log tool executions
+                        for exec in &result.tool_log {
+                            let status = if exec.success { "ok" } else { "fail" };
+                            let preview = if exec.output.len() > 100 {
+                                format!("{}...", &exec.output[..100])
+                            } else {
+                                exec.output.clone()
+                            };
+                            println!("  [tool:{} -> {status}] {preview}", exec.name);
+                        }
+
+                        if !result.final_text.trim().is_empty() {
+                            // WhatsApp has a ~65k char limit, truncate if needed
+                            let text = if result.final_text.len() > 4000 {
+                                format!("{}...\n[truncated]", &result.final_text[..4000])
+                            } else {
+                                result.final_text
+                            };
+                            println!("[kova -> {label}] {text}");
+                            bridge.send_message(&jid, &text).await?;
                         }
                     }
                     Err(e) => {
-                        tracing::error!("LLM error: {e}");
-                        bridge.send_message(&jid, "Error processing message.").await?;
+                        tracing::error!("agent error: {e}");
+                        bridge.send_message(&jid, &format!("Error: {e}")).await?;
                     }
                 }
             }
@@ -65,21 +88,6 @@ async fn main() -> Result<()> {
 
     bridge.kill().await?;
     Ok(())
-}
-
-fn strip_tool_calls(text: &str) -> String {
-    let mut result = String::new();
-    let mut remaining = text;
-    while let Some(start) = remaining.find("<tool_call>") {
-        result.push_str(&remaining[..start]);
-        if let Some(end) = remaining[start..].find("</tool_call>") {
-            remaining = &remaining[start + end + 12..];
-        } else {
-            break;
-        }
-    }
-    result.push_str(remaining);
-    result.trim().to_string()
 }
 
 fn find_project_root() -> Result<PathBuf> {
