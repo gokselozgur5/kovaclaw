@@ -1,0 +1,11 @@
+[package]
+name = "kova-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kova-core = { path = "../kova-core" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
